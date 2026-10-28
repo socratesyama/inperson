@@ -1,0 +1,293 @@
+<!doctype html>
+<html lang="ja"><head><meta charset="utf-8"><meta name="robots" content="noindex">
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>モザイクエディタ</title>
+<style>
+:root{--bg:#2b2b2e;--p:#36363a;--l:#4a4a50;--fg:#e8e8ea;--m:#9a9aa2;--a:#e5484d}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font:13px system-ui,"Hiragino Sans","Yu Gothic",sans-serif;display:flex;flex-direction:column;height:100vh;user-select:none}
+button,select,input,label.btn{font:inherit;color:var(--fg);background:var(--p);border:1px solid var(--l);border-radius:4px;padding:3px 8px}
+button,label.btn{cursor:pointer}button:hover,label.btn:hover{background:var(--l)}.pri{background:var(--a)!important;border-color:var(--a)!important}
+#bar{display:flex;gap:6px;align-items:center;padding:6px 8px;background:var(--p);border-bottom:1px solid var(--l);flex-wrap:wrap}
+#bar a{color:var(--m)}
+#main{flex:1;display:flex;min-height:0}
+#pvw{flex:1;display:flex;align-items:center;justify-content:center;min-width:0;padding:8px;background:#1c1c1e}
+#cv{max-width:100%;max-height:100%;background:#000;touch-action:none;cursor:crosshair}
+#v{position:absolute;width:1px;height:1px;opacity:0;pointer-events:none}
+#side{width:240px;background:var(--p);border-left:1px solid var(--l);padding:8px;overflow:auto}
+#side label{display:flex;justify-content:space-between;align-items:center;margin:4px 0}#side input[type=number]{width:84px}
+#side button{margin:2px 2px 2px 0}
+#tl{height:232px;overflow:auto;background:#222225;border-top:1px solid var(--l)}
+#tlin{position:relative;min-height:100%}
+#ruler{height:22px;background:var(--p);position:sticky;top:0;z-index:3;border-bottom:1px solid var(--l)}
+.row{position:absolute;left:0;right:0;height:30px;border-bottom:1px solid #333}
+.ob{position:absolute;height:24px;border-radius:4px;background:#3b82f6;border:1px solid #9cc0ff;overflow:hidden;font-size:11px;padding:3px 6px;white-space:nowrap;cursor:grab}
+.ob.blur{background:#8b5cf6}.ob.s{background:#e5a13b;border-color:#fff;color:#111}
+.kf{position:absolute;bottom:2px;width:6px;height:6px;background:#fff;transform:rotate(45deg);pointer-events:none}
+#ph{position:absolute;top:0;bottom:0;width:2px;background:var(--a);z-index:4;pointer-events:none}
+</style></head><body>
+<div id="bar">
+<label class="btn">動画を開く<input id="open" type="file" accept="video/*" hidden></label><span id="fn" style="color:var(--m)"></span>
+<button id="pl">▶ 再生/停止</button><span id="tm">0:00.00 / 0:00.00</span>
+<button id="add">＋ モザイク追加</button><button id="undo">元に戻す</button>
+<label>ズーム <input id="zm" type="range" min="10" max="300" value="60"></label>
+<button id="sp">プロジェクト保存</button><label class="btn">読込<input id="pj" type="file" accept=".json" hidden></label>
+<label class="btn" title="index.html の解析結果(tracks.json)を取り込み">自動解析の取込<input id="imp" type="file" accept=".json" hidden></label>
+<span style="flex:1"></span>
+<select id="br"><option value="4">4 Mbps</option><option value="8" selected>8 Mbps</option><option value="16">16 Mbps</option></select>
+<button class="pri" id="ex">MP4書き出し</button><progress id="pg" value="0" max="1"></progress><span id="exm" style="color:var(--m)"></span>
+<a href="index.html">自動解析→</a></div>
+<div id="main"><div id="pvw"><canvas id="cv" width="640" height="360"></canvas><video id="v" playsinline></video></div>
+<div id="side"><div id="pn" style="color:var(--m)">プレビュー上をドラッグしてモザイクを作成。<br>図形をクリックで選択、ドラッグで移動、四隅/辺で拡大縮小。<br><br>Space:再生 S:分割 Del:削除<br>←→:1コマ(Shift:1秒) Ctrl+Z:戻す Ctrl+D:複製</div>
+<div id="pf" hidden>
+<label>種類 <select id="ty"><option value="mosaic">モザイク</option><option value="blur">ぼかし</option></select></label>
+<label>形 <select id="sh"><option value="rect">四角</option><option value="ellipse">楕円</option></select></label>
+<label>粗さ/強さ <input id="sz" type="range" min="2" max="120" style="width:100px"></label>
+<label>開始(秒) <input id="t0" type="number" step="0.1"></label><label>終了(秒) <input id="t1" type="number" step="0.1"></label>
+<label>X <input id="bx" type="number"></label><label>Y <input id="by" type="number"></label>
+<label>幅 <input id="bw" type="number"></label><label>高さ <input id="bh" type="number"></label>
+<button id="kr">キーフレーム記録: OFF</button><button id="kd">現在のキーフレーム削除</button><br>
+<button id="spl">分割(S)</button><button id="dup">複製</button><button id="del">削除</button>
+<div style="color:var(--m);margin-top:6px">キーフレーム記録ONで、再生位置を変えながら動かすと、その間を自動で補間して追従します。</div></div></div></div>
+<div id="tl"><div id="tlin"><div id="ruler"></div><div id="ph"></div></div></div>
+<script>
+const $ = id => document.getElementById(id), v = $('v'), cv = $('cv'), g = cv.getContext('2d'), ROWS = 6;
+let objs = [], sel = null, nid = 1, W = 0, H = 0, dur = 0, pps = 60, hist = [], kfrec = false, exporting = false, key = null, drag = null, looping = false;
+const sc = document.createElement('canvas'), sg = sc.getContext('2d'), tl = $('tl'), tlin = $('tlin'), ph = $('ph');
+const clamp = (x, a, b) => Math.min(b, Math.max(a, x)), cur = () => objs.find(x => x.id === sel);
+const fmt = t => `${(t / 60) | 0}:${(t % 60).toFixed(2).padStart(5, '0')}`;
+
+// ---- モデル ----
+function boxOf(o, t) {
+  const K = o.kf, n = K.length;
+  if (n === 1 || t <= K[0].t) return { x: K[0].x, y: K[0].y, w: K[0].w, h: K[0].h };
+  if (t >= K[n - 1].t) return { x: K[n - 1].x, y: K[n - 1].y, w: K[n - 1].w, h: K[n - 1].h };
+  let i = 0; while (K[i + 1].t < t) i++;
+  const a = K[i], b = K[i + 1], w = (t - a.t) / (b.t - a.t), L = (p, q) => p + (q - p) * w;
+  return { x: L(a.x, b.x), y: L(a.y, b.y), w: L(a.w, b.w), h: L(a.h, b.h) };
+}
+function ensureKf(o, t) {
+  let k = o.kf.find(k => Math.abs(k.t - t) < 1 / 120);
+  if (!k) { k = { t, ...boxOf(o, t) }; o.kf.push(k); o.kf.sort((a, b) => a.t - b.t); }
+  return k;
+}
+function applyBox(d, nb) { // kf記録ON: 現在位置のキーフレームだけ / OFF: 全キーフレームに同じ差分
+  const ob = d.ob;
+  if (d.k) Object.assign(d.k, nb);
+  else d.o.kf = d.base.map(k => ({ ...k, x: k.x + nb.x - ob.x, y: k.y + nb.y - ob.y, w: Math.max(8, k.w + nb.w - ob.w), h: Math.max(8, k.h + nb.h - ob.h) }));
+}
+const snap = () => JSON.stringify({ objs, nid, sel });
+function push() { hist.push(snap()); if (hist.length > 60) hist.shift(); }
+function undo() { const s = hist.pop(); if (!s) return; ({ objs, nid, sel } = JSON.parse(s)); buildTL(); autosave(); draw(); }
+let st; const autosave = () => { clearTimeout(st); st = setTimeout(() => { try { if (key) localStorage.setItem('me:' + key, snap()); } catch { } }, 400); };
+function addObj(b) {
+  const t = v.currentTime, t1 = Math.min(dur, t + 3); let row = 0;
+  for (; row < ROWS - 1; row++) if (!objs.some(o => o.row === row && o.t0 < t1 && o.t1 > t)) break;
+  const o = { id: nid++, row, t0: t, t1, type: 'mosaic', shape: 'rect', size: Math.max(8, Math.round(b.w / 8)), kf: [{ t, ...b }] };
+  objs.push(o); sel = o.id; return o;
+}
+
+// ---- 描画 ----
+function fx(g, o, b) {
+  const x = Math.max(0, Math.floor(b.x)), y = Math.max(0, Math.floor(b.y)), w = Math.min(W, Math.ceil(b.x + b.w)) - x, h = Math.min(H, Math.ceil(b.y + b.h)) - y;
+  if (w < 2 || h < 2) return;
+  g.save(); g.beginPath();
+  o.shape === 'ellipse' ? g.ellipse(b.x + b.w / 2, b.y + b.h / 2, b.w / 2, b.h / 2, 0, 0, 7) : g.rect(x, y, w, h); g.clip();
+  if (o.type === 'blur') {
+    const p = Math.ceil(o.size * 2), px = Math.max(0, x - p), py = Math.max(0, y - p), pw = Math.min(W, x + w + p) - px, ph2 = Math.min(H, y + h + p) - py;
+    sc.width = pw; sc.height = ph2; sg.drawImage(g.canvas, px, py, pw, ph2, 0, 0, pw, ph2);
+    g.filter = `blur(${o.size}px)`; g.drawImage(sc, px, py); g.filter = 'none';
+  } else {
+    const bs = Math.max(2, o.size), sw = Math.max(1, Math.round(w / bs)), sh = Math.max(1, Math.round(h / bs));
+    sc.width = sw; sc.height = sh; sg.imageSmoothingQuality = 'high'; sg.drawImage(g.canvas, x, y, w, h, 0, 0, sw, sh);
+    g.imageSmoothingEnabled = false; g.drawImage(sc, 0, 0, sw, sh, x, y, w, h); g.imageSmoothingEnabled = true;
+  }
+  g.restore();
+}
+function render(g, t, ui) {
+  g.drawImage(v, 0, 0, W, H);
+  for (const o of [...objs].sort((a, b) => a.row - b.row)) if (t >= o.t0 && t <= o.t1) fx(g, o, boxOf(o, t));
+  if (ui) overlay(g, t);
+}
+const HS = () => Math.max(8, W / 110);
+const hpts = b => { const xs = [b.x, b.x + b.w / 2, b.x + b.w], ys = [b.y, b.y + b.h / 2, b.y + b.h], r = []; for (let i = 0; i < 3; i++) for (let j = 0; j < 3; j++) if (i !== 1 || j !== 1) r.push([i, j, xs[i], ys[j]]); return r; };
+function overlay(g, t) {
+  const lw = Math.max(2, W / 500), hs = HS(); g.lineWidth = lw;
+  for (const o of objs) {
+    if (t < o.t0 || t > o.t1) continue;
+    const b = boxOf(o, t), s = o.id === sel; g.strokeStyle = s ? '#ffb020' : 'rgba(255,255,255,.55)'; g.setLineDash(s ? [] : [lw * 3, lw * 3]);
+    if (o.shape === 'ellipse') { g.beginPath(); g.ellipse(b.x + b.w / 2, b.y + b.h / 2, b.w / 2, b.h / 2, 0, 0, 7); g.stroke(); } else g.strokeRect(b.x, b.y, b.w, b.h);
+    if (s) { g.setLineDash([]); g.fillStyle = '#ffb020'; for (const [, , x, y] of hpts(b)) g.fillRect(x - hs / 2, y - hs / 2, hs, hs); }
+  }
+  g.setLineDash([]);
+  if (drag && drag.new) { g.strokeStyle = '#0af'; g.strokeRect(drag.p0.x, drag.p0.y, drag.p.x - drag.p0.x, drag.p.y - drag.p0.y); }
+}
+function draw(t = v.currentTime) {
+  if (!W) return;
+  render(g, t, true); ph.style.left = t * pps + 'px'; $('tm').textContent = fmt(t) + ' / ' + fmt(dur);
+  if (!v.paused) { const x = t * pps; if (x > tl.scrollLeft + tl.clientWidth - 40 || x < tl.scrollLeft) tl.scrollLeft = Math.max(0, x - 40); }
+  refreshProps();
+}
+function loop() { v.requestVideoFrameCallback((_, m) => { if (!exporting) draw(m.mediaTime); loop(); }); }
+v.addEventListener('seeked', () => { if (!exporting) draw(); });
+
+// ---- プレビュー操作 ----
+const P = e => { const r = cv.getBoundingClientRect(); return { x: (e.clientX - r.left) * W / r.width, y: (e.clientY - r.top) * H / r.height }; };
+const inb = (b, p) => p.x >= b.x && p.x <= b.x + b.w && p.y >= b.y && p.y <= b.y + b.h;
+cv.onpointerdown = e => {
+  if (exporting || !W) return; v.pause(); cv.setPointerCapture(e.pointerId);
+  const p = P(e), t = v.currentTime, act = o => t >= o.t0 && t <= o.t1; let o = objs.find(x => x.id === sel && act(x)), mode = null;
+  if (o) {
+    const b = boxOf(o, t), h = hpts(b).find(([, , x, y]) => Math.abs(p.x - x) < HS() * 1.2 && Math.abs(p.y - y) < HS() * 1.2);
+    if (h) mode = { k: 'rs', i: h[0], j: h[1] }; else if (inb(b, p)) mode = { k: 'mv' }; else o = null;
+  }
+  if (!o) { const c = objs.filter(act).sort((a, b) => b.row - a.row).find(x => inb(boxOf(x, t), p)); if (c) { o = c; sel = c.id; mode = { k: 'mv' }; } }
+  if (o) {
+    push(); drag = { o, mode, p0: p, ob: boxOf(o, t), base: o.kf.map(k => ({ ...k })) };
+    if (kfrec) drag.k = ensureKf(o, t);
+    buildTL();
+  } else { sel = null; drag = { new: true, p0: p, p }; buildTL(); }
+  draw();
+};
+cv.onpointermove = e => {
+  if (!drag) return; const p = P(e);
+  if (drag.new) { drag.p = p; draw(); return; }
+  const dx = p.x - drag.p0.x, dy = p.y - drag.p0.y; let { x, y, w, h } = drag.ob;
+  if (drag.mode.k === 'mv') { x += dx; y += dy; }
+  else {
+    const { i, j } = drag.mode;
+    if (i === 0) { x += dx; w -= dx; } if (i === 2) w += dx; if (j === 0) { y += dy; h -= dy; } if (j === 2) h += dy;
+    if (w < 8) { if (i === 0) x -= 8 - w; w = 8; } if (h < 8) { if (j === 0) y -= 8 - h; h = 8; }
+  }
+  applyBox(drag, { x, y, w, h }); draw();
+};
+cv.onpointerup = () => {
+  if (!drag) return;
+  if (drag.new) { const a = drag.p0, b = drag.p, w = Math.abs(b.x - a.x), h = Math.abs(b.y - a.y); if (w > 10 && h > 10) { push(); addObj({ x: Math.min(a.x, b.x), y: Math.min(a.y, b.y), w, h }); } }
+  drag = null; buildTL(); autosave(); draw();
+};
+
+// ---- タイムライン ----
+const place = (d, o) => { d.style.left = o.t0 * pps + 'px'; d.style.width = Math.max(6, (o.t1 - o.t0) * pps) + 'px'; d.style.top = (22 + o.row * 30 + 3) + 'px'; };
+function buildTL() {
+  tlin.style.width = (dur * pps + 120) + 'px'; tlin.querySelectorAll('.ob,.row').forEach(e => e.remove());
+  for (let r = 0; r < ROWS; r++) { const d = document.createElement('div'); d.className = 'row'; d.style.top = (22 + r * 30) + 'px'; tlin.append(d); }
+  for (const o of objs) {
+    const d = document.createElement('div'); d.className = 'ob ' + o.type + (o.id === sel ? ' s' : ''); d.dataset.id = o.id;
+    d.textContent = (o.type === 'blur' ? 'ぼかし' : 'モザイク') + ' #' + o.id;
+    if (o.kf.length > 1) for (const k of o.kf) { const q = document.createElement('i'); q.className = 'kf'; q.style.left = ((k.t - o.t0) * pps - 3) + 'px'; d.append(q); }
+    place(d, o); d.onpointerdown = barDown; tlin.append(d);
+  }
+  const step = pps >= 120 ? 0.5 : pps >= 40 ? 1 : pps >= 15 ? 5 : 10; let h = '';
+  for (let t = 0; t <= dur; t += step) h += `<span style="position:absolute;left:${t * pps}px;top:3px;height:100%;font-size:10px;color:#9a9aa2;border-left:1px solid #555;padding-left:2px">${(t / 60) | 0}:${String((t % 60) | 0).padStart(2, '0')}${step < 1 && t % 1 ? '.5' : ''}</span>`;
+  $('ruler').innerHTML = h; ph.style.left = v.currentTime * pps + 'px';
+}
+function barDown(e) {
+  if (exporting) return; e.stopPropagation();
+  const el = e.currentTarget, o = objs.find(x => x.id == el.dataset.id); sel = o.id; push();
+  const r = el.getBoundingClientRect(), x = e.clientX - r.left, zone = x < 7 ? 'l' : x > r.width - 7 ? 'r' : 'm';
+  const s = { x: e.clientX, y: e.clientY, t0: o.t0, t1: o.t1, row: o.row, kf: o.kf.map(k => ({ ...k })) };
+  el.setPointerCapture(e.pointerId); document.querySelectorAll('.ob.s').forEach(n => n.classList.remove('s')); el.classList.add('s');
+  el.onpointermove = ev => {
+    const dt = (ev.clientX - s.x) / pps;
+    if (zone === 'm') { const len = s.t1 - s.t0; o.t0 = clamp(s.t0 + dt, 0, dur - len); o.t1 = o.t0 + len; o.row = clamp(s.row + Math.round((ev.clientY - s.y) / 30), 0, ROWS - 1); o.kf = s.kf.map(k => ({ ...k, t: k.t + (o.t0 - s.t0) })); }
+    else if (zone === 'l') o.t0 = clamp(s.t0 + dt, 0, s.t1 - 0.1); else o.t1 = clamp(s.t1 + dt, s.t0 + 0.1, dur);
+    place(el, o); draw();
+  };
+  el.onpointerup = () => { el.onpointermove = el.onpointerup = null; buildTL(); autosave(); draw(); };
+  draw();
+}
+tlin.onpointerdown = e => {
+  if (e.target.closest('.ob') || !W) return;
+  const mv = ev => { v.currentTime = clamp((ev.clientX - tlin.getBoundingClientRect().left) / pps, 0, dur); };
+  v.pause(); mv(e); tlin.setPointerCapture(e.pointerId); tlin.onpointermove = mv; tlin.onpointerup = () => { tlin.onpointermove = tlin.onpointerup = null; };
+};
+$('zm').oninput = () => { pps = +$('zm').value; buildTL(); draw(); };
+
+// ---- プロパティ ----
+function refreshProps() {
+  const o = cur(); $('pf').hidden = !o; $('pn').hidden = !!o; if (!o) return;
+  const b = boxOf(o, v.currentTime), set = (id, val) => { const el = $(id); if (document.activeElement !== el) el.value = val; };
+  set('ty', o.type); set('sh', o.shape); set('sz', o.size); set('t0', o.t0.toFixed(2)); set('t1', o.t1.toFixed(2));
+  set('bx', Math.round(b.x)); set('by', Math.round(b.y)); set('bw', Math.round(b.w)); set('bh', Math.round(b.h));
+}
+['ty', 'sh', 'sz', 't0', 't1', 'bx', 'by', 'bw', 'bh'].forEach(id => $(id).addEventListener('focus', push));
+['ty', 'sh', 'sz'].forEach(id => $(id).oninput = () => { const o = cur(); if (!o) return; o.type = $('ty').value; o.shape = $('sh').value; o.size = +$('sz').value; if (id !== 'sz') buildTL(); autosave(); draw(); });
+['t0', 't1'].forEach(id => $(id).onchange = () => { const o = cur(); if (!o) return; o.t0 = clamp(+$('t0').value, 0, dur); o.t1 = clamp(+$('t1').value, o.t0 + 0.1, dur); buildTL(); autosave(); draw(); });
+['bx', 'by', 'bw', 'bh'].forEach(id => $(id).onchange = () => {
+  const o = cur(); if (!o) return; const t = v.currentTime;
+  applyBox({ o, ob: boxOf(o, t), base: o.kf.map(k => ({ ...k })), k: kfrec ? ensureKf(o, t) : null }, { x: +$('bx').value, y: +$('by').value, w: Math.max(8, +$('bw').value), h: Math.max(8, +$('bh').value) });
+  autosave(); draw();
+});
+$('kr').onclick = () => { kfrec = !kfrec; $('kr').textContent = 'キーフレーム記録: ' + (kfrec ? 'ON' : 'OFF'); $('kr').classList.toggle('pri', kfrec); };
+$('kd').onclick = () => { const o = cur(), t = v.currentTime; if (!o || o.kf.length < 2) return; push(); const k = o.kf.find(k => Math.abs(k.t - t) < 1 / 30); if (k) o.kf = o.kf.filter(x => x !== k); buildTL(); autosave(); draw(); };
+function split() {
+  const o = cur(), t = v.currentTime; if (!o || t <= o.t0 + 0.05 || t >= o.t1 - 0.05) return; push();
+  const b = boxOf(o, t), n = JSON.parse(JSON.stringify(o)); n.id = nid++;
+  o.kf = o.kf.filter(k => k.t < t); o.kf.push({ t, ...b }); n.kf = n.kf.filter(k => k.t > t); n.kf.unshift({ t, ...b });
+  n.t0 = t; o.t1 = t; objs.push(n); sel = n.id; buildTL(); autosave(); draw();
+}
+function dup() { const o = cur(); if (!o) return; push(); const n = JSON.parse(JSON.stringify(o)); n.id = nid++; n.row = Math.min(ROWS - 1, o.row + 1); objs.push(n); sel = n.id; buildTL(); autosave(); draw(); }
+function del() { if (!cur()) return; push(); objs = objs.filter(o => o.id !== sel); sel = null; buildTL(); autosave(); draw(); }
+$('spl').onclick = split; $('dup').onclick = dup; $('del').onclick = del; $('undo').onclick = undo;
+$('add').onclick = () => { if (!W) return; push(); addObj({ x: W * 0.4, y: H * 0.35, w: W * 0.2, h: H * 0.3 }); buildTL(); autosave(); draw(); };
+
+// ---- 再生・キー ----
+let actx, asrc, adest;
+function ensureAudio() { if (actx) return; actx = new AudioContext(); asrc = actx.createMediaElementSource(v); adest = actx.createMediaStreamDestination(); asrc.connect(actx.destination); }
+const toggle = () => { if (!W || exporting) return; ensureAudio(); actx.resume(); v.paused ? v.play() : v.pause(); };
+$('pl').onclick = toggle;
+addEventListener('keydown', e => {
+  const tg = e.target; if (tg.tagName === 'SELECT' || (tg.tagName === 'INPUT' && tg.type !== 'range')) return;
+  if (e.key === ' ') { e.preventDefault(); toggle(); }
+  else if (e.key === 'Delete' || e.key === 'Backspace') del();
+  else if (e.key === 's' && !e.ctrlKey && !e.metaKey) split();
+  else if ((e.ctrlKey || e.metaKey) && e.key === 'z') { e.preventDefault(); undo(); }
+  else if ((e.ctrlKey || e.metaKey) && e.key === 'd') { e.preventDefault(); dup(); }
+  else if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') { e.preventDefault(); v.pause(); v.currentTime = clamp(v.currentTime + (e.key === 'ArrowLeft' ? -1 : 1) * (e.shiftKey ? 1 : 1 / 30), 0, dur); }
+});
+
+// ---- 入出力 ----
+$('open').onchange = () => { const f = $('open').files[0]; if (!f) return; v.src = URL.createObjectURL(f); key = `${f.name}|${f.size}|${f.lastModified}`; $('fn').textContent = f.name; };
+v.onloadedmetadata = () => {
+  W = v.videoWidth; H = v.videoHeight; dur = v.duration; cv.width = W; cv.height = H; hist = []; objs = []; sel = null; nid = 1;
+  try { const s = localStorage.getItem('me:' + key); if (s) ({ objs, nid } = JSON.parse(s)); } catch { }
+  buildTL(); v.currentTime = 0; if (!looping) { looping = true; loop(); } draw();
+};
+$('sp').onclick = () => { const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([snap()], { type: 'application/json' })); a.download = 'mosaic-project.json'; a.click(); };
+$('pj').onchange = async () => { const f = $('pj').files[0]; if (!f || !W) return; push(); ({ objs, nid } = JSON.parse(await f.text())); sel = null; buildTL(); autosave(); draw(); };
+$('imp').onchange = async () => { // index.html の tracks.json（本人=target）をモザイク領域として取り込む
+  const f = $('imp').files[0]; if (!f || !W) return; const j = JSON.parse(await f.text()); push();
+  for (const t of j.tracks.filter(t => t.target)) {
+    const kf = []; let last = -9;
+    t.t.forEach((tm, i) => {
+      if (tm - last >= 0.2 || i === t.t.length - 1) {
+        const b = t.b[i], w = b[2] - b[0], h = b[3] - b[1], w2 = w * 1.5, h2 = h * 1.7, cx = (b[0] + b[2]) / 2, cy = (b[1] + b[3]) / 2 - h * 0.1;
+        kf.push({ t: tm, x: cx - w2 / 2, y: cy - h2 / 2, w: w2, h: h2 }); last = tm;
+      }
+    });
+    const t0 = Math.max(0, kf[0].t - 0.3), t1 = Math.min(dur, kf[kf.length - 1].t + 0.3); let row = 0;
+    for (; row < ROWS - 1; row++) if (!objs.some(o => o.row === row && o.t0 < t1 && o.t1 > t0)) break;
+    objs.push({ id: nid++, row, t0, t1, type: 'mosaic', shape: 'rect', size: Math.max(8, Math.round(kf[0].w / 8)), kf });
+  }
+  buildTL(); autosave(); draw();
+};
+$('ex').onclick = async () => {
+  if (!W || exporting) return; v.pause();
+  const mime = ['video/mp4;codecs=avc1.640028,mp4a.40.2', 'video/mp4', 'video/webm;codecs=vp9,opus', 'video/webm'].find(m => MediaRecorder.isTypeSupported(m));
+  const ext = mime.startsWith('video/mp4') ? 'mp4' : 'webm'; let wr = null;
+  if (window.showSaveFilePicker) { try { wr = await (await showSaveFilePicker({ suggestedName: 'mosaic.' + ext })).createWritable(); } catch { return; } }
+  exporting = true; ensureAudio(); asrc.disconnect(actx.destination); asrc.connect(adest); await actx.resume();
+  $('exm').textContent = ext === 'mp4' ? '書き出し中…' : 'このブラウザはMP4非対応のためwebmで出力します';
+  const c = document.createElement('canvas'); c.width = W; c.height = H; const cg = c.getContext('2d');
+  const stream = c.captureStream(); adest.stream.getAudioTracks().forEach(t => stream.addTrack(t));
+  const rc = new MediaRecorder(stream, { mimeType: mime, videoBitsPerSecond: +$('br').value * 1e6, audioBitsPerSecond: 192000 });
+  const parts = []; let chain = Promise.resolve();
+  rc.ondataavailable = e => { if (e.data.size) wr ? chain = chain.then(() => wr.write(e.data)) : parts.push(e.data); };
+  const stopped = new Promise(r => rc.onstop = r), ended = new Promise(r => v.addEventListener('ended', r, { once: true }));
+  await new Promise(r => { v.addEventListener('seeked', r, { once: true }); v.currentTime = 0; }); render(cg, 0, false);
+  const f1 = (_, m) => { if (v.ended) return; render(cg, m.mediaTime, false); $('pg').value = m.mediaTime / dur; v.requestVideoFrameCallback(f1); };
+  rc.start(1000); v.requestVideoFrameCallback(f1); await v.play(); await ended; rc.stop(); await stopped; await chain;
+  if (wr) await wr.close(); else { const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob(parts, { type: mime })); a.download = 'mosaic.' + ext; a.click(); }
+  asrc.disconnect(adest); asrc.connect(actx.destination); exporting = false; v.currentTime = 0; $('pg').value = 1; $('exm').textContent = '完了'; draw();
+};
+</script></body></html>
